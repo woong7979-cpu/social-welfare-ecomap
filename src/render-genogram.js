@@ -243,25 +243,21 @@ function layoutGenerations(generations, parentships, couples, peopleById) {
 function drawPerson(svg, p, pos, isClient) {
   const cx = pos.x + NODE_W / 2;
   const cy = pos.y + NODE_H / 2;
-  const isMissing = (p.missing_fields && p.missing_fields.length) || p.age == null;
   const stroke = isClient ? '#1565C0' : '#333';
   const fill = isClient ? '#E3F2FD' : '#fff';
   const strokeW = isClient ? 4 : 2;
-  const dash = isMissing ? '4 4' : null;
-  const opacity = isMissing && !isClient ? 0.55 : 1;
 
   let shape;
   if (p.sex === 'M') {
     shape = el('rect', { x: pos.x, y: pos.y, width: NODE_W, height: NODE_H,
-      fill, stroke, 'stroke-width': strokeW, ...(dash && { 'stroke-dasharray': dash }), opacity });
+      fill, stroke, 'stroke-width': strokeW });
   } else if (p.sex === 'F') {
-    shape = el('circle', { cx, cy, r: NODE_W / 2, fill, stroke, 'stroke-width': strokeW,
-      ...(dash && { 'stroke-dasharray': dash }), opacity });
+    shape = el('circle', { cx, cy, r: NODE_W / 2, fill, stroke, 'stroke-width': strokeW });
   } else {
     // 알 수 없음 = 마름모
     const half = NODE_W / 2;
     shape = el('polygon', { points: `${cx},${pos.y} ${pos.x + NODE_W},${cy} ${cx},${pos.y + NODE_H} ${pos.x},${cy}`,
-      fill, stroke, 'stroke-width': strokeW, ...(dash && { 'stroke-dasharray': dash }), opacity });
+      fill, stroke, 'stroke-width': strokeW });
   }
   svg.appendChild(shape);
 
@@ -273,23 +269,19 @@ function drawPerson(svg, p, pos, isClient) {
       stroke: '#333', 'stroke-width': 2 }));
   }
 
-  // 나이/이름 라벨
-  const ageStr = p.age != null ? String(p.age) : '?';
-  const labelColor = isClient ? '#1565C0' : (isMissing ? '#888' : '#222');
-  svg.appendChild(text(cx, cy + 5, ageStr, { 'font-size': 18, 'font-weight': 700,
-    'text-anchor': 'middle', fill: labelColor }));
-  svg.appendChild(text(cx, pos.y + NODE_H + 16, p.name || '', { 'font-size': 11,
-    'text-anchor': 'middle', fill: labelColor }));
+  // 나이/이름 라벨 — 정보가 없는 항목은 표시하지 않음 (깔끔하게)
+  const labelColor = isClient ? '#1565C0' : '#222';
+  if (p.age != null) {
+    svg.appendChild(text(cx, cy + 5, String(p.age), { 'font-size': 18, 'font-weight': 700,
+      'text-anchor': 'middle', fill: labelColor }));
+  }
+  if (p.name) {
+    svg.appendChild(text(cx, pos.y + NODE_H + 16, p.name, { 'font-size': 11,
+      'text-anchor': 'middle', fill: labelColor }));
+  }
   if (p.occupation) {
     svg.appendChild(text(cx, pos.y + NODE_H + 30, p.occupation, { 'font-size': 9,
       'text-anchor': 'middle', fill: '#666' }));
-  }
-
-  // 누락 배지
-  if (isMissing) {
-    const bx = pos.x + NODE_W - 6, by = pos.y - 6;
-    svg.appendChild(el('circle', { cx: bx, cy: by, r: 9, fill: '#FFC107', stroke: '#fff', 'stroke-width': 2 }));
-    svg.appendChild(text(bx, by + 4, '?', { 'font-size': 12, 'font-weight': 700, 'text-anchor': 'middle', fill: '#fff' }));
   }
 
   // 호버 툴팁

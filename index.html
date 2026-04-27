@@ -64,10 +64,6 @@
             <svg width="16" height="16"><rect x="2" y="2" width="12" height="12" fill="#E3F2FD" stroke="#1565C0" stroke-width="3"/></svg>
             본인(클라이언트)
           </span>
-          <span class="legend-item">
-            <svg width="16" height="16"><circle cx="8" cy="8" r="6" fill="white" stroke="#888" stroke-width="2" stroke-dasharray="3 2"/></svg>
-            정보 누락
-          </span>
         </div>
       </article>
 
@@ -149,17 +145,15 @@
     function renderGuide(items) {
       guideList.innerHTML = '';
       if (!items.length) {
-        guideList.innerHTML = '<li class="empty-state" style="background:none;border:none;">✅ 표준 사정 항목을 모두 충족합니다.</li>';
+        guideList.innerHTML = '<li class="empty-state" style="background:none;border:none;">✅ 사정 핵심 항목이 모두 수집되었습니다.</li>';
         return;
       }
-      // high → medium 순
-      items.sort((a, b) => (a.severity === 'high' ? -1 : 1) - (b.severity === 'high' ? -1 : 1));
       for (const it of items) {
         const li = document.createElement('li');
-        if (it.severity === 'high') li.classList.add('high');
+        li.classList.add('high');
         const sev = document.createElement('span');
         sev.className = 'sev';
-        sev.textContent = it.severity === 'high' ? '필수' : '권장';
+        sev.textContent = '필수';
         const txt = document.createElement('span');
         txt.textContent = it.message;
         li.appendChild(sev); li.appendChild(txt);

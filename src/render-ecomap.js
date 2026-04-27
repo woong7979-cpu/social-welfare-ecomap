@@ -44,18 +44,8 @@ export function renderEcomap(svg, data) {
     drawHouseholdPerson(svg, person, x, y, person.id === data.client_id);
   }
 
-  // 3) 시스템 노드 + 누락 카테고리 채워넣기
-  const systems = [...(data.ecomap_systems || [])];
-  const presentCats = new Set(systems.map(s => s.category));
-  // 누락 카테고리 = 회색 placeholder
-  for (const cat of STANDARD_CATEGORIES) {
-    if (!presentCats.has(cat)) {
-      systems.push({
-        id: `missing_${cat}`, label: `${cat}\n(미수집)`, category: cat,
-        linked_to: [], tone: 'uncertain', strength: 1, direction: 'bi', _missing: true,
-      });
-    }
-  }
+  // 3) 실제 입력된 시스템 노드만 렌더 (없는 카테고리는 보강 가이드 패널이 담당)
+  const systems = (data.ecomap_systems || []).slice();
 
   // 균등 각도 배치 (-π/2 부터 시계 방향)
   const N = systems.length;

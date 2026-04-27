@@ -1,115 +1,109 @@
-// 사회복지 사정의 누락 항목을 결정론적으로 탐지한다.
-// LLM 출력에 의존하지 않고도 표준 체크리스트(가계도/생태도)를 비교하여 보강 인터뷰 가이드를 생성.
+// 사회복지 사정의 핵심 누락 항목만 결정론적으로 탐지한다.
+// 부수적 인물(조카·외조부모·삼촌 등)의 미상 정보는 제외하고,
+// 클라이언트 본인·배우자·자녀·부모와 핵심 외부체계(종교·의료·친구·이웃·여가)만 점검.
 
-import { STANDARD_CATEGORIES } from './render-ecomap.js';
-
-// 가계도 인구학 필수 필드
-const PERSON_REQUIRED = [
-  { field: 'age', label: '나이' },
-  { field: 'sex', label: '성별' },
-  { field: 'alive', label: '생존여부' },
-];
-// 가계도 권장 필드 (있으면 좋음)
-const PERSON_RECOMMENDED = [
-  { field: 'occupation', label: '직업' },
-  { field: 'health', label: '건강상태/질환' },
+const ESSENTIAL_SYSTEMS = [
+  { cat: '의료', hint: '주치의/병원·만성질환·정기 진료 체계 확인' },
+  { cat: '종교', hint: '종교 활동·신앙 공동체 소속 확인' },
+  { cat: '친구', hint: '가까운 친구·또래 지지망 확인' },
+  { cat: '이웃', hint: '거주 지역 이웃·비공식 지원 확인' },
+  { cat: '여가', hint: '취미·운동·자기관리 활동 확인' },
 ];
 
 export function checkMissing(data) {
   const items = [];
+  const peopleById = new Map((data.people || []).map(p => [p.id, p]));
+  const client = peopleById.get(data.client_id);
+  if (!client) {
+    items.push({ severity: 'high', message: '의뢰인(본인) 식별 정보 미수집' });
+    return dedupe(items);
+  }
 
-  // 1) 인물별 누락 필드
-  for (const p of (data.people || [])) {
-    const missingReq = PERSON_REQUIRED.filter(f => isEmpty(p[f.field])).map(f => f.label);
-    const missingRec = PERSON_RECOMMENDED.filter(f => isEmpty(p[f.field])).map(f => f.label);
-    const personMissing = (p.missing_fields || []).map(f => translateField(f));
-    const all = [...new Set([...missingReq, ...missingRec, ...personMissing])];
-    if (all.length) {
-      items.push({
-        kind: 'person',
-        target: p.name || p.id,
-        targetId: p.id,
-        severity: missingReq.length ? 'high' : 'medium',
-        message: `${p.name || p.id}: ${all.join(', ')} 미수집`,
-      });
+  // 1) 본인 핵심 사정
+  if (isEmpty(client.occupation)) {
+    items.push({ severity: 'high', message: '본인의 직업·근로형태·소득 안정성 미수집' });
+  }
+  if (isEmpty(client.health) && isEmpty(client.notes)) {
+    items.push({ severity: 'high', message: '본인의 건강 상태·정신건강·스트레스 수준 미수집' });
+  }
+
+  // 2) 배우자 관계 (있을 때만 검사)
+  const marriages = data.marriages || [];
+  const spouseEdge = marriages.find(m => m.a === client.id || m.b === client.id);
+  if (spouseEdge) {
+    const spouseId = spouseEdge.a === client.id ? spouseEdge.b : spouseEdge.a;
+    const spouse = peopleById.get(spouseId);
+    if (spouse) {
+      if (isEmpty(spouse.occupation)) {
+        items.push({ severity: 'high', message: `배우자(${spouse.name || spouseId})의 직업·소득 미수집` });
+      }
+      // 부부 관계의 질(갈등·지지)은 인터뷰에서 명시적으로 묻고 ecomap 톤에 반영해야 함
+      const coupleTone = (data.ecomap_systems || []).some(s =>
+        s.category === '부부' || (Array.isArray(s.linked_to) && s.linked_to.includes(client.id) && s.linked_to.includes(spouseId)));
+      if (!coupleTone) {
+        items.push({ severity: 'high', message: '부부 관계의 질(지지·갈등·의사소통 패턴) 미수집' });
+      }
+    }
+  } else {
+    items.push({ severity: 'high', message: '본인의 결혼 상태(미혼·기혼·이혼·사별) 미수집' });
+  }
+
+  // 3) 자녀 특성 (자녀가 있을 때만 검사)
+  const parentships = data.parentships || [];
+  const childrenIds = parentships
+    .filter(p => Array.isArray(p.parents) && p.parents.includes(client.id))
+    .flatMap(p => p.children);
+  const children = [...new Set(childrenIds)].map(id => peopleById.get(id)).filter(Boolean);
+  for (const ch of children) {
+    const missing = [];
+    if (isEmpty(ch.occupation) && isEmpty(ch.notes)) missing.push('학교/소속');
+    if (isEmpty(ch.health) && isEmpty(ch.notes)) missing.push('건강·발달·정서');
+    if (missing.length) {
+      const label = ch.name || (ch.age != null ? `${ch.age}세 자녀` : '자녀');
+      items.push({ severity: 'high', message: `자녀(${label}): ${missing.join(', ')} 미수집` });
     }
   }
 
-  // 2) 생태도 표준 카테고리 누락
+  // 4) 부모 생사·건강 (생존한 경우 건강 상태가 사정에 핵심)
+  const parentEdge = parentships.find(p => Array.isArray(p.children) && p.children.includes(client.id));
+  if (parentEdge) {
+    for (const pid of parentEdge.parents) {
+      const par = peopleById.get(pid);
+      if (par && par.alive !== false && isEmpty(par.health) && isEmpty(par.notes)) {
+        const label = par.name || pid;
+        items.push({ severity: 'high', message: `부모(${label}): 건강·돌봄 필요 여부 미수집` });
+      }
+    }
+  }
+
+  // 5) 외부 체계 핵심 카테고리 누락
   const presentCats = new Set((data.ecomap_systems || []).map(s => s.category).filter(Boolean));
-  for (const cat of STANDARD_CATEGORIES) {
-    if (!presentCats.has(cat)) {
-      items.push({
-        kind: 'system',
-        target: cat,
-        severity: 'medium',
-        message: `[${cat}] 체계 미수집 — ${categoryHint(cat)}`,
-      });
+  for (const e of ESSENTIAL_SYSTEMS) {
+    if (!presentCats.has(e.cat)) {
+      items.push({ severity: 'high', message: `[${e.cat}] 체계 미수집 — ${e.hint}` });
     }
   }
 
-  // 3) 가구(household) 미정의
-  if (!data.household || data.household.length === 0) {
-    items.push({
-      kind: 'structure',
-      target: '가구',
-      severity: 'high',
-      message: '동거 가구원(household) 정보가 없습니다 — 누구와 함께 사는지 확인 필요',
-    });
-  }
-
-  // 4) 클라이언트 미지정
-  if (!data.client_id) {
-    items.push({
-      kind: 'structure',
-      target: '본인',
-      severity: 'high',
-      message: '클라이언트(본인) 식별이 없습니다',
-    });
-  }
-
-  // 5) LLM이 직접 보고한 missing 항목 합치기
+  // 6) LLM이 high로 보고한 missing 항목만 합치기
   for (const m of (data.missing || [])) {
-    items.push({
-      kind: m.level === 'system' ? 'system' : 'person',
-      target: m.id || m.category || '?',
-      severity: m.severity || 'medium',
-      message: m.hint || '',
-    });
+    if ((m.severity === 'high' || !m.severity) && m.hint) {
+      items.push({ severity: 'high', message: m.hint });
+    }
   }
 
-  // 중복 제거 (메시지 기준)
-  const seen = new Set();
-  return items.filter(it => {
-    if (seen.has(it.message)) return false;
-    seen.add(it.message);
-    return true;
-  });
+  return dedupe(items);
 }
 
 function isEmpty(v) {
   return v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
 }
 
-function translateField(f) {
-  const map = {
-    age: '나이', sex: '성별', alive: '생존여부',
-    occupation: '직업', health: '건강', education: '학력',
-    contact: '연락 가능 여부', notes: '특이사항',
-  };
-  return map[f] || f;
-}
-
-function categoryHint(cat) {
-  const hints = {
-    '직업': '본인/배우자 직장, 근로형태, 소득원 확인',
-    '교육': '재학/학업 상태, 학교, 학습 환경',
-    '종교': '종교활동, 신앙 공동체 소속',
-    '의료': '주치의/병원, 만성질환, 정기 진료 여부',
-    '이웃': '거주 지역 이웃·동네 모임 등 비공식 지원',
-    '친구': '가까운 친구·또래 지지망',
-    '여가': '취미·여가활동 (운동, 동호회 등)',
-    '학습': '평생학습·자기계발 활동',
-  };
-  return hints[cat] || '';
+function dedupe(items) {
+  const seen = new Set();
+  return items.filter(it => {
+    if (!it.message) return false;
+    if (seen.has(it.message)) return false;
+    seen.add(it.message);
+    return true;
+  });
 }
