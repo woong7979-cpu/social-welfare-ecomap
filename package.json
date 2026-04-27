@@ -1,0 +1,16 @@
+{
+  "name": "social-welfare-ecomap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "사회복지 가계도/생태도 자동작성 웹앱 (인터뷰 텍스트 → SVG)",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel deploy --prod"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
