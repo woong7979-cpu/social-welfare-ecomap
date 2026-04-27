@@ -414,8 +414,11 @@ function drawPerson(svg, p, pos, isClient) {
 function drawMarriageLine(svg, A, B, status) {
   if (!A || !B) return;
   const y = A.y + NODE_H / 2;
-  const x1 = Math.min(A.x, B.x) + NODE_W;
-  const x2 = Math.max(A.x, B.x);
+  // 결혼선이 노드 가장자리에서 끊겨 보이지 않도록, 양쪽 노드 안쪽으로 약간 연장
+  // (노드 X 마크와 살짝 겹쳐도 무방 — 시각적 연속성 우선)
+  const overlap = 4;
+  const x1 = Math.min(A.x, B.x) + NODE_W - overlap;
+  const x2 = Math.max(A.x, B.x) + overlap;
   const mx = (x1 + x2) / 2;
 
   // 표준 표기:
@@ -427,7 +430,8 @@ function drawMarriageLine(svg, A, B, status) {
   const dash = isCohabit ? '6 4' : null;
 
   svg.appendChild(el('line', {
-    x1, y1: y, x2, y2: y, stroke: '#333', 'stroke-width': 2,
+    x1, y1: y, x2, y2: y, stroke: '#222', 'stroke-width': 2.5,
+    'stroke-linecap': 'round',
     ...(dash && { 'stroke-dasharray': dash }),
   }));
 
