@@ -176,13 +176,22 @@ function layoutTopDown(peopleById, parentships, couples) {
       u._maxAge = u.kind === 'couple'
         ? Math.max(u.left.age || 0, u.right.age || 0)
         : (u.person.age || 0);
+      // 가계 정렬 우선순위: 자녀가 다음 세대 부부에서 M(좌) 이면 -1, F(우)이면 +1
+      // 이걸로 친조부모(아들=아버지의 부모)는 좌측, 외조부모(딸=어머니의 부모)는 우측에 자동 배치
+      u._lineage = lineagePriority(u, parentships, peopleById);
     }
 
-    // 정렬: desiredX(없으면 inf), 같은 부모군이면 나이 desc
+    // 정렬:
+    //  1) desiredX가 충분히 다르면 그 순서
+    //  2) 같은 부모군(형제)이면 나이 desc (출생순)
+    //  3) 부모군이 다르면 가계 정렬 (친=좌, 외=우)
+    //  4) 그 외 tiebreaker: 나이 desc
     units.sort((a, b) => {
       const ax = a._desiredX === null ? Number.POSITIVE_INFINITY : a._desiredX;
       const bx = b._desiredX === null ? Number.POSITIVE_INFINITY : b._desiredX;
-      if (Math.abs(ax - bx) > 1) return ax - bx;
+      if (Number.isFinite(ax) && Number.isFinite(bx) && Math.abs(ax - bx) > 1) return ax - bx;
+      if (sameParentGroup(a, b, parentships)) return b._maxAge - a._maxAge;
+      if (a._lineage !== b._lineage) return a._lineage - b._lineage;
       return b._maxAge - a._maxAge;
     });
 
@@ -211,6 +220,35 @@ function placeUnit(u, x, y, positions) {
   } else {
     positions.set(u.person.id, { x, y, person: u.person });
   }
+}
+
+// 두 단위가 같은 부모군(형제)에서 나왔는지 판별
+function sameParentGroup(uA, uB, parentships) {
+  for (const ps of parentships) {
+    const aMatch = uA.members.some(id => ps.children.includes(id));
+    const bMatch = uB.members.some(id => ps.children.includes(id));
+    if (aMatch && bMatch) return true;
+  }
+  return false;
+}
+
+// 가계 정렬 우선순위 — 자녀가 다음 세대 부부에서 M(좌측)이면 음수, F(우측)이면 양수.
+// 부모 세대(예: gen 0)에서 자녀의 결혼 위치를 미리 보고 친(아버지의 부모)을 좌측,
+// 외(어머니의 부모)를 우측에 자연스럽게 배치하기 위함.
+function lineagePriority(unit, parentships, peopleById) {
+  let p = 0;
+  for (const memberId of unit.members) {
+    for (const ps of parentships) {
+      if (!ps.parents.includes(memberId)) continue;
+      for (const childId of ps.children) {
+        const ch = peopleById.get(childId);
+        if (!ch) continue;
+        if (ch.sex === 'M') p -= 1;       // 아들 = 좌측 가계
+        else if (ch.sex === 'F') p += 1;  // 딸 = 우측 가계
+      }
+    }
+  }
+  return p;
 }
 
 // 부모(들)의 위치를 보고, 자식 단위가 위치할 X 중심을 계산
@@ -378,12 +416,34 @@ function drawMarriageLine(svg, A, B, status) {
   const y = A.y + NODE_H / 2;
   const x1 = Math.min(A.x, B.x) + NODE_W;
   const x2 = Math.max(A.x, B.x);
-  const dash = status === 'divorced' ? '8 4' : status === 'separated' ? '4 4' : null;
-  svg.appendChild(el('line', { x1, y1: y, x2, y2: y, stroke: '#333', 'stroke-width': 2, ...(dash && { 'stroke-dasharray': dash }) }));
-  if (status === 'divorced') {
-    const mx = (x1 + x2) / 2;
-    svg.appendChild(el('line', { x1: mx - 6, y1: y - 8, x2: mx - 2, y2: y + 8, stroke: '#c00', 'stroke-width': 2 }));
-    svg.appendChild(el('line', { x1: mx + 2, y1: y - 8, x2: mx + 6, y2: y + 8, stroke: '#c00', 'stroke-width': 2 }));
+  const mx = (x1 + x2) / 2;
+
+  // 표준 표기:
+  //   married   → 실선
+  //   cohabit/partner → 점선 (동거/사실혼)
+  //   separated → 실선 + 사선 1개
+  //   divorced  → 실선 + 사선 2개
+  const isCohabit = status === 'cohabit' || status === 'partner' || status === 'lt';
+  const dash = isCohabit ? '6 4' : null;
+
+  svg.appendChild(el('line', {
+    x1, y1: y, x2, y2: y, stroke: '#333', 'stroke-width': 2,
+    ...(dash && { 'stroke-dasharray': dash }),
+  }));
+
+  if (status === 'separated') {
+    // 사선 1개 (별거)
+    svg.appendChild(el('line', {
+      x1: mx - 4, y1: y - 8, x2: mx + 4, y2: y + 8, stroke: '#333', 'stroke-width': 2,
+    }));
+  } else if (status === 'divorced') {
+    // 사선 2개 (이혼) — 살짝 빨간 톤으로 가독성 강조
+    svg.appendChild(el('line', {
+      x1: mx - 8, y1: y - 8, x2: mx, y2: y + 8, stroke: '#c00', 'stroke-width': 2,
+    }));
+    svg.appendChild(el('line', {
+      x1: mx + 2, y1: y - 8, x2: mx + 10, y2: y + 8, stroke: '#c00', 'stroke-width': 2,
+    }));
   }
 }
 

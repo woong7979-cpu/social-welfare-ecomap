@@ -48,22 +48,66 @@
           <svg id="genogram" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
         <div class="legend-box">
-          <span class="legend-item">
-            <svg width="16" height="16"><rect x="2" y="2" width="12" height="12" fill="white" stroke="#333" stroke-width="2"/></svg>
-            남자
-          </span>
-          <span class="legend-item">
-            <svg width="16" height="16"><circle cx="8" cy="8" r="6" fill="white" stroke="#333" stroke-width="2"/></svg>
-            여자
-          </span>
-          <span class="legend-item">
-            <svg width="16" height="16"><rect x="2" y="2" width="12" height="12" fill="white" stroke="#333" stroke-width="2"/><line x1="2" y1="2" x2="14" y2="14" stroke="#333" stroke-width="1.5"/><line x1="14" y1="2" x2="2" y2="14" stroke="#333" stroke-width="1.5"/></svg>
-            사망
-          </span>
-          <span class="legend-item">
-            <svg width="16" height="16"><rect x="2" y="2" width="12" height="12" fill="#E3F2FD" stroke="#1565C0" stroke-width="3"/></svg>
-            본인(클라이언트)
-          </span>
+          <div class="legend-section">
+            <span class="legend-title">인물</span>
+            <span class="legend-item">
+              <svg width="16" height="16"><rect x="2" y="2" width="12" height="12" fill="white" stroke="#333" stroke-width="2"/></svg>
+              남자
+            </span>
+            <span class="legend-item">
+              <svg width="16" height="16"><circle cx="8" cy="8" r="6" fill="white" stroke="#333" stroke-width="2"/></svg>
+              여자
+            </span>
+            <span class="legend-item">
+              <svg width="16" height="16"><rect x="2" y="2" width="12" height="12" fill="white" stroke="#333" stroke-width="2"/><line x1="2" y1="2" x2="14" y2="14" stroke="#333" stroke-width="1.5"/><line x1="14" y1="2" x2="2" y2="14" stroke="#333" stroke-width="1.5"/></svg>
+              사망
+            </span>
+            <span class="legend-item">
+              <svg width="16" height="16"><rect x="2" y="2" width="12" height="12" fill="#E3F2FD" stroke="#1565C0" stroke-width="3"/></svg>
+              본인(클라이언트)
+            </span>
+            <span class="legend-item">
+              <svg width="16" height="16"><polygon points="8,3 14,13 2,13" fill="white" stroke="#333" stroke-width="2"/></svg>
+              임신 중
+            </span>
+          </div>
+          <div class="legend-section">
+            <span class="legend-title">부부 관계</span>
+            <span class="legend-item">
+              <svg width="46" height="14"><line x1="2" y1="7" x2="44" y2="7" stroke="#333" stroke-width="2"/></svg>
+              결혼 (실선)
+            </span>
+            <span class="legend-item">
+              <svg width="46" height="14"><line x1="2" y1="7" x2="44" y2="7" stroke="#333" stroke-width="2" stroke-dasharray="6 4"/></svg>
+              동거 (점선)
+            </span>
+            <span class="legend-item">
+              <svg width="46" height="14"><line x1="2" y1="7" x2="44" y2="7" stroke="#333" stroke-width="2"/><line x1="19" y1="1" x2="27" y2="13" stroke="#333" stroke-width="2"/></svg>
+              별거 (사선 1개)
+            </span>
+            <span class="legend-item">
+              <svg width="46" height="14"><line x1="2" y1="7" x2="44" y2="7" stroke="#333" stroke-width="2"/><line x1="15" y1="1" x2="23" y2="13" stroke="#c00" stroke-width="2"/><line x1="23" y1="1" x2="31" y2="13" stroke="#c00" stroke-width="2"/></svg>
+              이혼 (사선 2개)
+            </span>
+          </div>
+          <div class="legend-section">
+            <span class="legend-title">자녀·기타</span>
+            <span class="legend-item">
+              <svg width="32" height="20"><line x1="16" y1="2" x2="6" y2="18" stroke="#333" stroke-width="1.5"/><line x1="16" y1="2" x2="26" y2="18" stroke="#333" stroke-width="1.5"/></svg>
+              쌍둥이
+            </span>
+            <span class="legend-item">
+              <svg width="32" height="20"><line x1="16" y1="2" x2="16" y2="18" stroke="#333" stroke-width="1.5" stroke-dasharray="3 3"/></svg>
+              입양 (점선)
+            </span>
+            <span class="legend-item">
+              <svg width="32" height="20"><line x1="16" y1="2" x2="16" y2="11" stroke="#333" stroke-width="1.5"/><line x1="16" y1="11" x2="11" y2="18" stroke="#333" stroke-width="1.5"/><line x1="16" y1="11" x2="21" y2="18" stroke="#333" stroke-width="1.5"/><circle cx="11" cy="18" r="1.5" fill="#c00"/></svg>
+              유산/사산 (X 표시)
+            </span>
+            <span class="legend-item">
+              자녀 순서: 좌(첫째) → 우(막내)
+            </span>
+          </div>
         </div>
       </article>
 

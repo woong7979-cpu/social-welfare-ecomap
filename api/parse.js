@@ -26,7 +26,7 @@ const SYSTEM_PROMPT = `당신은 한국 사회복지 실천현장의 사정(asse
       "is_client": true, "missing_fields": ["health"] }
   ],
   "marriages": [ { "a": "self", "b": "wife",
-    "status": "married"|"divorced"|"separated"|"partner" } ],
+    "status": "married"|"cohabit"|"separated"|"divorced"|"partner" } ],
   "parentships": [ { "parents": ["father","mother"], "children": ["self","brother"] } ],
   "household": ["self","wife","son"],
   "ecomap_systems": [
@@ -49,6 +49,11 @@ const SYSTEM_PROMPT = `당신은 한국 사회복지 실천현장의 사정(asse
 - "친밀/지지/도움이 됨/긍정적" → tone: positive
 - "강한/매우/큰/주된" → strength 3, "보통" → 2, "약한/느슨한" → 1
 - 도움 방향이 명시되지 않으면 direction: "bi"
+- marriage status 매핑:
+  · 결혼/혼인/부부 → "married"
+  · 동거/사실혼/연인 → "cohabit"
+  · 별거 → "separated"
+  · 이혼/전남편/전처 → "divorced"
 - 누락은 가능한 한 풍부하게 포함: 표준 카테고리(직업/교육/종교/의료/이웃/친구/여가/학습) 중 인터뷰에 등장하지
   않은 카테고리, 인구학 정보 미상(나이/성별/생존), 가족 구성원의 직업·건강 정보 미상 등.`;
 

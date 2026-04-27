@@ -188,7 +188,7 @@ ul.guide-list li.high .sev { color: var(--danger); }
 
 /* ── 범례 ───────────────── */
 .legend-box {
-  display: flex; flex-wrap: wrap; gap: 14px 18px;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 10px 14px;
   background: #F7F8FA;
   border-radius: 6px;
@@ -196,8 +196,20 @@ ul.guide-list li.high .sev { color: var(--danger); }
   color: var(--text-soft);
   margin-top: 10px;
 }
+.legend-section {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed #E1E5EA;
+}
+.legend-section:last-child { border-bottom: none; padding-bottom: 0; }
+.legend-title {
+  font-weight: 700; color: var(--text);
+  font-size: 11px; min-width: 70px;
+  background: white; padding: 2px 8px; border-radius: 4px;
+  border: 1px solid var(--border);
+}
 .legend-item { display: flex; align-items: center; gap: 6px; }
-.legend-item svg { display: inline-block; }
+.legend-item svg { display: inline-block; flex-shrink: 0; }
 
 footer {
   text-align: center; padding: 24px; color: var(--text-soft); font-size: 11px;
