@@ -1,40 +1,55 @@
-// 가계도 SVG 렌더러
-// 입력: { people, marriages, parentships, client_id }
-// - people[].gen 이 없으면 부모-자식 관계로 자동 산출
-// - 같은 세대는 한 행에 좌→우 배치 (배우자 인접, 같은 부모 자녀 그룹화)
-// - 남자 = 사각형, 여자 = 원, 알 수 없음 = 마름모
-// - 사망 = 큰 X 오버레이
-// - 본인(client) = 굵은 테두리 + 강조 색
-// - 누락(missing_fields 비어있지 않음) = 회색 + 점선 테두리 + ❓ 배지
+// 가계도 SVG 렌더러 v2 — 부모-중심 정렬, 부부 세대 전파, 자녀 그룹 정렬
+//
+// 알고리즘
+//   1) 세대 할당: 명시 gen → 시작값. 그 다음 부모-자녀 관계와 부부 관계를 통해 saturate.
+//      (부부는 같은 세대, 자녀는 부모 세대+1, 부모는 자녀 세대-1)
+//   2) 단위 구성: 같은 세대 안에서 부부=한 묶음(couple), 단독=solo로 묶음.
+//   3) 톱-다운 배치: 세대를 0부터 차례로 배치.
+//      - 각 단위는 부모(상위 세대)의 X 중심 아래에 배치하려고 시도
+//      - 좌→우 cursor로 충돌(겹침) 방지
+//      - 단위 정렬 키: 부모X(없으면 0), 같은 부모면 출생순(나이 desc)
+//   4) 보텀-업 보정: 자녀 그룹 중심이 부모 중심보다 오른쪽으로 밀렸으면 부모 단위를 우측으로 시프트.
+//   5) 세대 끝나면 다음 세대도 동일.
 
-const NODE_W = 64;       // 사각형/원 한 변
+const NODE_W = 64;
 const NODE_H = 64;
-const COL_GAP = 24;      // 형제간 가로 간격
-const COUPLE_GAP = 32;   // 부부 사이 간격 (결혼선 길이)
-const ROW_GAP = 110;     // 세대간 세로 간격
-const PAD = 60;          // 캔버스 여백
+const COL_GAP = 28;       // 형제 단위 간 가로 여백
+const COUPLE_GAP = 28;    // 부부 사이 결혼선 여백
+const ROW_GAP = 110;      // 세대간 세로 간격
+const PAD = 60;
 
 export function renderGenogram(svg, data) {
-  // 정리
   while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-  const peopleById = new Map(data.people.map(p => [p.id, { ...p }]));
+  const peopleById = new Map((data.people || []).map(p => [p.id, { ...p }]));
+  const marriages = (data.marriages || []).filter(m => peopleById.has(m.a) && peopleById.has(m.b));
+  const parentships = (data.parentships || [])
+    .map(ps => ({
+      parents: (ps.parents || []).filter(id => peopleById.has(id)),
+      children: (ps.children || []).filter(id => peopleById.has(id)),
+    }))
+    .filter(ps => ps.parents.length > 0 && ps.children.length > 0);
 
-  // 1) 세대 산출 (BFS from client)
-  assignGenerations(peopleById, data.parentships, data.client_id);
+  if (peopleById.size === 0) return;
 
-  // 2) 가족 단위(부모 쌍 → 자녀들) 트리 구성
-  const couples = buildCouples(data.marriages, peopleById);
-  // person id -> couple id (배우자가 있는 경우)
-  const personToCouple = new Map();
-  couples.forEach(c => { personToCouple.set(c.a, c.id); personToCouple.set(c.b, c.id); });
+  // 1) 세대 할당
+  assignGenerations(peopleById, parentships, marriages, data.client_id);
 
-  // 3) 세대별 좌→우 정렬
-  // 단순 휴리스틱: 같은 부모 그룹은 인접, 부부는 인접, 부부 단위로 행 배치
-  const generations = groupByGen(peopleById);
-  const positions = layoutGenerations(generations, data.parentships, couples, peopleById);
+  // 2) 부부 인덱스
+  const couples = marriages.map((m, i) => ({
+    id: `c${i}`, a: m.a, b: m.b, status: m.status || 'married',
+  }));
 
-  // 캔버스 크기 계산
+  // 3) 톱-다운 배치
+  const positions = layoutTopDown(peopleById, parentships, couples);
+
+  // 4) 보텀-업 정렬: 부모 단위를 자녀 중심에 맞춰 우측 시프트 (필요 시)
+  alignParentsToChildren(positions, parentships, couples, peopleById);
+
+  // 5) 좌측 음수 보정 + 충돌 재정리
+  normalizePositions(positions, peopleById, couples);
+
+  // 6) 캔버스 크기
   const allX = [...positions.values()].map(p => p.x);
   const allY = [...positions.values()].map(p => p.y);
   const width = Math.max(...allX) + NODE_W + PAD * 2;
@@ -42,167 +57,253 @@ export function renderGenogram(svg, data) {
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
-  // 4) 결혼선 그리기
-  for (const m of data.marriages) {
-    const A = positions.get(m.a); const B = positions.get(m.b);
-    if (!A || !B) continue;
-    drawMarriageLine(svg, A, B, m.status);
-  }
+  // 7) 결혼선
+  for (const m of marriages) drawMarriageLine(svg, positions.get(m.a), positions.get(m.b), m.status);
 
-  // 5) 부모-자녀선 그리기
-  for (const ps of data.parentships) {
-    drawParentChildLines(svg, ps, positions, peopleById);
-  }
+  // 8) 부모-자녀선
+  for (const ps of parentships) drawParentChildLines(svg, ps, positions);
 
-  // 6) 사람 노드 그리기
+  // 9) 인물 노드
   for (const p of peopleById.values()) {
     const pos = positions.get(p.id);
-    if (!pos) continue;
-    drawPerson(svg, p, pos, p.id === data.client_id);
+    if (pos) drawPerson(svg, p, pos, p.id === data.client_id);
   }
 }
 
-// ─── 세대 산출 ────────────────────────────────────────────────
-function assignGenerations(peopleById, parentships, clientId) {
-  // 명시값 우선
+// ──────────────────────────────────────────────────────────────
+// 1) 세대 할당 (saturating BFS, 명시 gen + parentship + marriage)
+// ──────────────────────────────────────────────────────────────
+function assignGenerations(peopleById, parentships, marriages, clientId) {
   for (const p of peopleById.values()) {
     if (typeof p.gen === 'number') p._gen = p.gen;
   }
-  if ([...peopleById.values()].every(p => typeof p._gen === 'number')) return;
+  // 시드: 클라이언트 = 0 (없으면 첫 인물)
+  if (clientId && peopleById.has(clientId) && peopleById.get(clientId)._gen === undefined) {
+    peopleById.get(clientId)._gen = 0;
+  }
+  if (![...peopleById.values()].some(p => p._gen !== undefined)) {
+    [...peopleById.values()][0]._gen = 0;
+  }
 
-  // BFS: 클라이언트를 0으로 두고 부모=-1, 자녀=+1 propagate, 마지막에 normalize
-  if (!peopleById.get(clientId)._gen) peopleById.get(clientId)._gen = 0;
+  let changed = true, iter = 0;
+  while (changed && iter < 100) {
+    iter++; changed = false;
 
-  let changed = true;
-  while (changed) {
-    changed = false;
+    // 부부는 같은 세대
+    for (const m of marriages) {
+      const a = peopleById.get(m.a), b = peopleById.get(m.b);
+      if (a._gen !== undefined && b._gen === undefined) { b._gen = a._gen; changed = true; }
+      else if (b._gen !== undefined && a._gen === undefined) { a._gen = b._gen; changed = true; }
+    }
+    // 부모-자녀
     for (const ps of parentships) {
-      const childGens = ps.children.map(id => peopleById.get(id)?._gen).filter(g => g !== undefined);
-      const parentGens = ps.parents.map(id => peopleById.get(id)?._gen).filter(g => g !== undefined);
-      if (childGens.length && parentGens.length === 0) {
-        const g = Math.min(...childGens) - 1;
+      const childGens = ps.children.map(id => peopleById.get(id)._gen).filter(g => g !== undefined);
+      const parentGens = ps.parents.map(id => peopleById.get(id)._gen).filter(g => g !== undefined);
+      if (childGens.length) {
+        const gParent = Math.min(...childGens) - 1;
         for (const pid of ps.parents) {
-          if (peopleById.get(pid) && peopleById.get(pid)._gen === undefined) {
-            peopleById.get(pid)._gen = g; changed = true;
-          }
+          const par = peopleById.get(pid);
+          if (par._gen === undefined) { par._gen = gParent; changed = true; }
         }
       }
-      if (parentGens.length && childGens.length === 0) {
-        const g = Math.max(...parentGens) + 1;
+      if (parentGens.length) {
+        const gChild = Math.max(...parentGens) + 1;
         for (const cid of ps.children) {
-          if (peopleById.get(cid) && peopleById.get(cid)._gen === undefined) {
-            peopleById.get(cid)._gen = g; changed = true;
-          }
+          const ch = peopleById.get(cid);
+          if (ch._gen === undefined) { ch._gen = gChild; changed = true; }
         }
       }
     }
   }
+  // 미할당 → 0, 정규화
+  for (const p of peopleById.values()) if (p._gen === undefined) p._gen = 0;
+  const minGen = Math.min(...[...peopleById.values()].map(p => p._gen));
+  for (const p of peopleById.values()) p._gen -= minGen;
+}
 
-  // 배우자도 같은 세대로
-  // (marriages는 layout에서 처리되지만 세대값이 없으면 보정)
-  const minGen = Math.min(...[...peopleById.values()].map(p => p._gen ?? 0));
-  for (const p of peopleById.values()) {
-    if (p._gen === undefined) p._gen = 0;
-    p._gen -= minGen;
+// ──────────────────────────────────────────────────────────────
+// 2) 단위 구성 헬퍼
+// ──────────────────────────────────────────────────────────────
+function buildUnitsForGen(peopleInGen, couples) {
+  const used = new Set();
+  const units = [];
+  for (const p of peopleInGen) {
+    if (used.has(p.id)) continue;
+    const couple = couples.find(c =>
+      (c.a === p.id || c.b === p.id) &&
+      peopleInGen.some(q => q.id === (c.a === p.id ? c.b : c.a))
+    );
+    if (couple) {
+      const spouseId = couple.a === p.id ? couple.b : couple.a;
+      const spouse = peopleInGen.find(q => q.id === spouseId);
+      // 표준: 남자 좌측, 여자 우측
+      const left = p.sex === 'M' ? p : (spouse.sex === 'M' ? spouse : p);
+      const right = left === p ? spouse : p;
+      units.push({ kind: 'couple', id: couple.id, left, right, status: couple.status, members: [p.id, spouseId] });
+      used.add(spouseId);
+    } else {
+      units.push({ kind: 'solo', id: p.id, person: p, members: [p.id] });
+    }
   }
+  return units;
 }
 
-function groupByGen(peopleById) {
-  const out = new Map();
+function unitWidth(unit) {
+  return unit.kind === 'couple' ? (NODE_W * 2 + COUPLE_GAP) : NODE_W;
+}
+
+// ──────────────────────────────────────────────────────────────
+// 3) 톱-다운 배치
+// ──────────────────────────────────────────────────────────────
+function layoutTopDown(peopleById, parentships, couples) {
+  // 세대별 분류
+  const byGen = new Map();
   for (const p of peopleById.values()) {
-    const g = p._gen;
-    if (!out.has(g)) out.set(g, []);
-    out.get(g).push(p);
+    if (!byGen.has(p._gen)) byGen.set(p._gen, []);
+    byGen.get(p._gen).push(p);
   }
-  return out;
-}
+  const gens = [...byGen.keys()].sort((a, b) => a - b);
 
-function buildCouples(marriages, peopleById) {
-  return marriages
-    .filter(m => peopleById.has(m.a) && peopleById.has(m.b))
-    .map((m, i) => ({ id: `c${i}`, a: m.a, b: m.b, status: m.status || 'married' }));
-}
-
-// ─── 레이아웃 ────────────────────────────────────────────────
-function layoutGenerations(generations, parentships, couples, peopleById) {
   const positions = new Map();
-  const gens = [...generations.keys()].sort((a, b) => a - b);
 
-  // 각 세대별로 "단위(unit)" 리스트를 만든다. 단위는 (1) 부부, (2) 솔로
-  // 같은 부모를 가진 형제는 인접 배치하기 위해 정렬
   for (const g of gens) {
-    const peopleInGen = generations.get(g).slice();
-    // 정렬 키: (부모 parentship index) → (출생순 = age desc)
-    const parentOf = (id) => parentships.findIndex(ps => ps.children.includes(id));
-    peopleInGen.sort((p, q) => {
-      const pp = parentOf(p.id), qp = parentOf(q.id);
-      if (pp !== qp) return pp - qp;
-      return (q.age || 0) - (p.age || 0); // 손위 형제 좌측
+    const peopleInGen = byGen.get(g);
+    const units = buildUnitsForGen(peopleInGen, couples);
+
+    // 부모 X 중심을 미리 계산 (이미 배치된 상위 세대에서)
+    for (const u of units) {
+      u._desiredX = computeDesiredCenter(u, parentships, positions);
+      u._maxAge = u.kind === 'couple'
+        ? Math.max(u.left.age || 0, u.right.age || 0)
+        : (u.person.age || 0);
+    }
+
+    // 정렬: desiredX(없으면 inf), 같은 부모군이면 나이 desc
+    units.sort((a, b) => {
+      const ax = a._desiredX === null ? Number.POSITIVE_INFINITY : a._desiredX;
+      const bx = b._desiredX === null ? Number.POSITIVE_INFINITY : b._desiredX;
+      if (Math.abs(ax - bx) > 1) return ax - bx;
+      return b._maxAge - a._maxAge;
     });
 
-    // 단위 묶기: 솔로/부부
-    const usedSpouseOf = new Set();
-    const units = [];
-    for (const p of peopleInGen) {
-      if (usedSpouseOf.has(p.id)) continue;
-      const spouseEdge = couples.find(c => (c.a === p.id || c.b === p.id) &&
-                                            generations.get(g).some(q => q.id === (c.a === p.id ? c.b : c.a)));
-      if (spouseEdge) {
-        const spouseId = spouseEdge.a === p.id ? spouseEdge.b : spouseEdge.a;
-        // 남자 좌측 / 여자 우측 표준
-        const left = p.sex === 'M' ? p : peopleById.get(spouseId);
-        const right = p.sex === 'M' ? peopleById.get(spouseId) : p;
-        units.push({ kind: 'couple', left, right, status: spouseEdge.status });
-        usedSpouseOf.add(spouseId);
-      } else {
-        units.push({ kind: 'solo', person: p });
-      }
-    }
-
-    // x 좌표 배치
-    let x = PAD;
+    // 좌→우 cursor 배치
+    let cursor = PAD;
     const y = PAD + g * (NODE_H + ROW_GAP);
     for (const u of units) {
-      if (u.kind === 'couple') {
-        positions.set(u.left.id, { x, y, person: u.left });
-        positions.set(u.right.id, { x: x + NODE_W + COUPLE_GAP, y, person: u.right });
-        x += NODE_W * 2 + COUPLE_GAP + COL_GAP;
+      const w = unitWidth(u);
+      let startX;
+      if (u._desiredX !== null) {
+        startX = Math.max(cursor, u._desiredX - w / 2);
       } else {
-        positions.set(u.person.id, { x, y, person: u.person });
-        x += NODE_W + COL_GAP;
+        startX = cursor;
       }
+      placeUnit(u, startX, y, positions);
+      cursor = startX + w + COL_GAP;
     }
   }
+  return positions;
+}
 
-  // 자녀가 부모 쌍 중앙으로 가도록 후처리: 각 parentship에 대해 자녀 그룹 중심을 부모 중심에 맞춰 시프트
-  for (const ps of parentships) {
-    const parents = ps.parents.map(id => positions.get(id)).filter(Boolean);
-    const children = ps.children.map(id => positions.get(id)).filter(Boolean);
-    if (parents.length === 0 || children.length === 0) continue;
-    const parentCenter = (Math.min(...parents.map(p => p.x)) + Math.max(...parents.map(p => p.x)) + NODE_W) / 2;
-    const childMin = Math.min(...children.map(c => c.x));
-    const childMax = Math.max(...children.map(c => c.x)) + NODE_W;
-    const childCenter = (childMin + childMax) / 2;
-    const dx = parentCenter - childCenter;
-    if (Math.abs(dx) > 1) {
-      // 자녀 + 자녀의 배우자만 이동 (다른 가계 영향 회피)
-      const moved = new Set();
-      for (const c of children) {
-        c.x += dx; moved.add(c.person.id);
-        const couple = couples.find(cp => cp.a === c.person.id || cp.b === c.person.id);
-        if (couple) {
-          const spouseId = couple.a === c.person.id ? couple.b : couple.a;
-          const sp = positions.get(spouseId);
-          if (sp && !moved.has(spouseId)) { sp.x += dx; moved.add(spouseId); }
+function placeUnit(u, x, y, positions) {
+  if (u.kind === 'couple') {
+    positions.set(u.left.id, { x, y, person: u.left });
+    positions.set(u.right.id, { x: x + NODE_W + COUPLE_GAP, y, person: u.right });
+  } else {
+    positions.set(u.person.id, { x, y, person: u.person });
+  }
+}
+
+// 부모(들)의 위치를 보고, 자식 단위가 위치할 X 중심을 계산
+// - couple 단위면 두 배우자의 부모군 모두 평균
+// - solo 단위면 본인 부모군 1개
+function computeDesiredCenter(unit, parentships, positions) {
+  const memberIds = unit.members;
+  const centers = [];
+  for (const memberId of memberIds) {
+    for (const ps of parentships) {
+      if (!ps.children.includes(memberId)) continue;
+      const placed = ps.parents.map(pid => positions.get(pid)).filter(Boolean);
+      if (placed.length === 0) continue;
+      const minX = Math.min(...placed.map(p => p.x));
+      const maxX = Math.max(...placed.map(p => p.x)) + NODE_W;
+      centers.push((minX + maxX) / 2);
+    }
+  }
+  if (centers.length === 0) return null;
+  return centers.reduce((a, b) => a + b, 0) / centers.length;
+}
+
+// ──────────────────────────────────────────────────────────────
+// 4) 보텀-업 보정: 부모 단위를 자녀 그룹 중심에 맞춰 시프트
+// ──────────────────────────────────────────────────────────────
+function alignParentsToChildren(positions, parentships, couples, peopleById) {
+  // 가장 깊은 세대부터 위로 올라오면서, 각 부모 그룹이 자녀 중심보다 왼쪽이면
+  // 부모 단위(부부 또는 솔로)를 자녀 중심에 맞춰 우측 시프트
+  const gens = [...new Set([...peopleById.values()].map(p => p._gen))].sort((a, b) => b - a);
+  for (const g of gens) {
+    if (g === 0) continue;
+    for (const ps of parentships) {
+      // ps의 자녀 중 한 명이라도 g 세대인지 확인
+      const childPos = ps.children.map(id => positions.get(id)).filter(Boolean);
+      if (childPos.length === 0) continue;
+      const childGen = childPos[0]?.person?._gen;
+      if (childGen !== g) continue;
+
+      const parentPos = ps.parents.map(id => positions.get(id)).filter(Boolean);
+      if (parentPos.length === 0) continue;
+
+      const childMinX = Math.min(...childPos.map(p => p.x));
+      const childMaxX = Math.max(...childPos.map(p => p.x)) + NODE_W;
+      const childCenter = (childMinX + childMaxX) / 2;
+
+      const parentMinX = Math.min(...parentPos.map(p => p.x));
+      const parentMaxX = Math.max(...parentPos.map(p => p.x)) + NODE_W;
+      const parentCenter = (parentMinX + parentMaxX) / 2;
+
+      const dx = childCenter - parentCenter;
+      if (dx > 1) {
+        // 부모 단위(부부면 같이) 우측으로 시프트, 그리고 같은 세대에서 부모보다 우측에 있는 모든 노드도 함께 시프트
+        const parentGen = parentPos[0]?.person?._gen;
+        const shiftIds = new Set();
+        // 부모 본인들
+        for (const pp of parentPos) shiftIds.add(pp.person.id);
+        // 부모의 배우자(있으면 같이)
+        for (const pid of ps.parents) {
+          const couple = couples.find(c => c.a === pid || c.b === pid);
+          if (couple) {
+            shiftIds.add(couple.a); shiftIds.add(couple.b);
+          }
+        }
+        // 같은 세대에서 부모보다 우측에 있는 모든 노드
+        for (const [id, pos] of positions.entries()) {
+          if (pos.person._gen === parentGen && pos.x >= parentMinX) {
+            shiftIds.add(id);
+          }
+        }
+        for (const id of shiftIds) {
+          const p = positions.get(id);
+          if (p) p.x += dx;
         }
       }
     }
   }
+}
 
-  // 충돌 해소: 같은 세대 안에서 부부=묶음, 솔로=단독 그룹으로 묶고
-  // 좌→우 패스로 그룹간 최소 간격(COL_GAP) 보장. 부부는 묶음 시프트로 결혼선 길이 유지.
+// ──────────────────────────────────────────────────────────────
+// 5) 음수 보정 + 같은 세대 충돌 해소
+// ──────────────────────────────────────────────────────────────
+function normalizePositions(positions, peopleById, couples) {
+  // 음수 X 보정
+  const minX = Math.min(...[...positions.values()].map(p => p.x));
+  if (minX < PAD) {
+    const shift = PAD - minX;
+    for (const v of positions.values()) v.x += shift;
+  }
+
+  // 같은 세대 내 충돌 해소 (부부 묶음 단위)
+  const gens = [...new Set([...peopleById.values()].map(p => p._gen))].sort((a, b) => a - b);
   for (const g of gens) {
-    const peopleInG = generations.get(g);
+    const peopleInG = [...peopleById.values()].filter(p => p._gen === g);
     const groupMap = new Map();
     for (const p of peopleInG) {
       const couple = couples.find(c =>
@@ -213,33 +314,24 @@ function layoutGenerations(generations, parentships, couples, peopleById) {
       groupMap.get(key).push(p.id);
     }
     const groups = [...groupMap.values()].map(ids => ({
-      ids,
-      ps: ids.map(id => positions.get(id)).filter(Boolean),
+      ids, ps: ids.map(id => positions.get(id)).filter(Boolean),
     }));
-    const leftX = (g) => Math.min(...g.ps.map(p => p.x));
-    const rightX = (g) => Math.max(...g.ps.map(p => p.x)) + NODE_W;
-    groups.sort((a, b) => leftX(a) - leftX(b));
+    const left = (gr) => Math.min(...gr.ps.map(p => p.x));
+    const right = (gr) => Math.max(...gr.ps.map(p => p.x)) + NODE_W;
+    groups.sort((a, b) => left(a) - left(b));
     for (let i = 1; i < groups.length; i++) {
-      const minLeft = rightX(groups[i - 1]) + COL_GAP;
-      const cur = leftX(groups[i]);
-      if (cur < minLeft) {
-        const dx = minLeft - cur;
+      const minLeft = right(groups[i - 1]) + COL_GAP;
+      if (left(groups[i]) < minLeft) {
+        const dx = minLeft - left(groups[i]);
         groups[i].ps.forEach(p => { p.x += dx; });
       }
     }
   }
-
-  // 음수 좌표 보정
-  const minX = Math.min(...[...positions.values()].map(p => p.x));
-  if (minX < PAD) {
-    const shift = PAD - minX;
-    for (const v of positions.values()) v.x += shift;
-  }
-
-  return positions;
 }
 
-// ─── 그리기 ────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────
+// 6) 그리기
+// ──────────────────────────────────────────────────────────────
 function drawPerson(svg, p, pos, isClient) {
   const cx = pos.x + NODE_W / 2;
   const cy = pos.y + NODE_H / 2;
@@ -249,55 +341,45 @@ function drawPerson(svg, p, pos, isClient) {
 
   let shape;
   if (p.sex === 'M') {
-    shape = el('rect', { x: pos.x, y: pos.y, width: NODE_W, height: NODE_H,
-      fill, stroke, 'stroke-width': strokeW });
+    shape = el('rect', { x: pos.x, y: pos.y, width: NODE_W, height: NODE_H, fill, stroke, 'stroke-width': strokeW });
   } else if (p.sex === 'F') {
     shape = el('circle', { cx, cy, r: NODE_W / 2, fill, stroke, 'stroke-width': strokeW });
   } else {
-    // 알 수 없음 = 마름모
-    const half = NODE_W / 2;
-    shape = el('polygon', { points: `${cx},${pos.y} ${pos.x + NODE_W},${cy} ${cx},${pos.y + NODE_H} ${pos.x},${cy}`,
-      fill, stroke, 'stroke-width': strokeW });
+    shape = el('polygon', {
+      points: `${cx},${pos.y} ${pos.x + NODE_W},${cy} ${cx},${pos.y + NODE_H} ${pos.x},${cy}`,
+      fill, stroke, 'stroke-width': strokeW,
+    });
   }
   svg.appendChild(shape);
 
-  // 사망 표시 (X)
   if (p.alive === false) {
-    svg.appendChild(el('line', { x1: pos.x, y1: pos.y, x2: pos.x + NODE_W, y2: pos.y + NODE_H,
-      stroke: '#333', 'stroke-width': 2 }));
-    svg.appendChild(el('line', { x1: pos.x + NODE_W, y1: pos.y, x2: pos.x, y2: pos.y + NODE_H,
-      stroke: '#333', 'stroke-width': 2 }));
+    svg.appendChild(el('line', { x1: pos.x, y1: pos.y, x2: pos.x + NODE_W, y2: pos.y + NODE_H, stroke: '#333', 'stroke-width': 2 }));
+    svg.appendChild(el('line', { x1: pos.x + NODE_W, y1: pos.y, x2: pos.x, y2: pos.y + NODE_H, stroke: '#333', 'stroke-width': 2 }));
   }
 
-  // 나이/이름 라벨 — 정보가 없는 항목은 표시하지 않음 (깔끔하게)
   const labelColor = isClient ? '#1565C0' : '#222';
   if (p.age != null) {
-    svg.appendChild(text(cx, cy + 5, String(p.age), { 'font-size': 18, 'font-weight': 700,
-      'text-anchor': 'middle', fill: labelColor }));
+    svg.appendChild(text(cx, cy + 5, String(p.age), { 'font-size': 18, 'font-weight': 700, 'text-anchor': 'middle', fill: labelColor }));
   }
   if (p.name) {
-    svg.appendChild(text(cx, pos.y + NODE_H + 16, p.name, { 'font-size': 11,
-      'text-anchor': 'middle', fill: labelColor }));
+    svg.appendChild(text(cx, pos.y + NODE_H + 16, p.name, { 'font-size': 11, 'text-anchor': 'middle', fill: labelColor }));
   }
   if (p.occupation) {
-    svg.appendChild(text(cx, pos.y + NODE_H + 30, p.occupation, { 'font-size': 9,
-      'text-anchor': 'middle', fill: '#666' }));
+    svg.appendChild(text(cx, pos.y + NODE_H + 30, p.occupation, { 'font-size': 9, 'text-anchor': 'middle', fill: '#666' }));
   }
 
-  // 호버 툴팁
   const titleEl = el('title', {});
   titleEl.textContent = describePerson(p);
   shape.appendChild(titleEl);
 }
 
 function drawMarriageLine(svg, A, B, status) {
+  if (!A || !B) return;
   const y = A.y + NODE_H / 2;
   const x1 = Math.min(A.x, B.x) + NODE_W;
   const x2 = Math.max(A.x, B.x);
   const dash = status === 'divorced' ? '8 4' : status === 'separated' ? '4 4' : null;
-  svg.appendChild(el('line', { x1, y1: y, x2, y2: y, stroke: '#333', 'stroke-width': 2,
-    ...(dash && { 'stroke-dasharray': dash }) }));
-  // 이혼은 대각선 슬래시 두 개로 표시
+  svg.appendChild(el('line', { x1, y1: y, x2, y2: y, stroke: '#333', 'stroke-width': 2, ...(dash && { 'stroke-dasharray': dash }) }));
   if (status === 'divorced') {
     const mx = (x1 + x2) / 2;
     svg.appendChild(el('line', { x1: mx - 6, y1: y - 8, x2: mx - 2, y2: y + 8, stroke: '#c00', 'stroke-width': 2 }));
@@ -305,31 +387,27 @@ function drawMarriageLine(svg, A, B, status) {
   }
 }
 
-function drawParentChildLines(svg, ps, positions, peopleById) {
+function drawParentChildLines(svg, ps, positions) {
   const parents = ps.parents.map(id => positions.get(id)).filter(Boolean);
   const children = ps.children.map(id => positions.get(id)).filter(Boolean);
   if (parents.length === 0 || children.length === 0) return;
 
-  // 부모 쌍 중앙(결혼선 중간)에서 아래로 내려서 자녀 위쪽 가로 라인으로 분기
   let busX;
   if (parents.length === 2) {
-    busX = (Math.min(parents[0].x, parents[1].x) + NODE_W + Math.max(parents[0].x, parents[1].x)) / 2;
+    const minX = Math.min(parents[0].x, parents[1].x);
+    const maxX = Math.max(parents[0].x, parents[1].x);
+    busX = (minX + NODE_W + maxX) / 2;
   } else {
     busX = parents[0].x + NODE_W / 2;
   }
-  const busTopY = parents[0].y + NODE_H / 2; // 결혼선 높이
+  const busTopY = parents[0].y + NODE_H / 2;
   const childTopY = children[0].y;
   const busY = (busTopY + childTopY) / 2;
 
-  // 부모 → 버스
   svg.appendChild(el('line', { x1: busX, y1: busTopY, x2: busX, y2: busY, stroke: '#333', 'stroke-width': 1.5 }));
-
-  // 자녀 가로 버스
-  const minX = Math.min(...children.map(c => c.x + NODE_W / 2));
-  const maxX = Math.max(...children.map(c => c.x + NODE_W / 2));
-  svg.appendChild(el('line', { x1: minX, y1: busY, x2: maxX, y2: busY, stroke: '#333', 'stroke-width': 1.5 }));
-
-  // 각 자녀 → 버스
+  const minCx = Math.min(...children.map(c => c.x + NODE_W / 2));
+  const maxCx = Math.max(...children.map(c => c.x + NODE_W / 2));
+  svg.appendChild(el('line', { x1: minCx, y1: busY, x2: maxCx, y2: busY, stroke: '#333', 'stroke-width': 1.5 }));
   for (const c of children) {
     const cx = c.x + NODE_W / 2;
     svg.appendChild(el('line', { x1: cx, y1: busY, x2: cx, y2: c.y, stroke: '#333', 'stroke-width': 1.5 }));
@@ -343,13 +421,9 @@ function describePerson(p) {
   if (p.alive === false) parts.push('사망');
   if (p.occupation) parts.push(p.occupation);
   if (p.notes) parts.push(`(${p.notes})`);
-  if (p.missing_fields && p.missing_fields.length) {
-    parts.push(`\n누락: ${p.missing_fields.join(', ')}`);
-  }
   return parts.join(' · ');
 }
 
-// ─── SVG helpers ────────────────────────────────────────────────
 function el(tag, attrs = {}) {
   const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [k, v] of Object.entries(attrs)) {
