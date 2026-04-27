@@ -92,7 +92,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 ```
 사회복지_생태도/
 ├── index.html              # UI 진입점
-├── public/styles.css       # 스타일
+├── styles.css              # 스타일
 ├── src/
 │   ├── render-genogram.js  # 가계도 SVG (세대별 레이아웃)
 │   ├── render-ecomap.js    # 생태도 SVG (방사형 레이아웃)
