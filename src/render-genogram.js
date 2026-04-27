@@ -40,6 +40,25 @@ export function renderGenogram(svg, data) {
     id: `c${i}`, a: m.a, b: m.b, status: m.status || 'married',
   }));
 
+  // 2-b) 부모 쌍에서 implicit couple 추론
+  //   LLM이 인터뷰에서 부부 관계를 명시적으로 안 뽑은 경우(예: "외조부는 일찍 작고, 외조모는 농촌 거주"
+  //   처럼 결혼/혼인 단어 없이 부모만 언급된 경우)에도, 같은 자녀의 부모 쌍이라면 결혼 관계로 보고
+  //   결혼선이 그려지도록 자동 보완.
+  const knownPair = new Set(couples.map(c => [c.a, c.b].sort().join('|')));
+  for (const ps of parentships) {
+    if (ps.parents.length !== 2) continue;
+    const key = [ps.parents[0], ps.parents[1]].sort().join('|');
+    if (knownPair.has(key)) continue;
+    couples.push({
+      id: `c_implicit_${couples.length}`,
+      a: ps.parents[0], b: ps.parents[1],
+      status: 'married',
+    });
+    // marriages 배열에도 추가 — drawMarriageLine 루프에서 결혼선 그려지도록
+    marriages.push({ a: ps.parents[0], b: ps.parents[1], status: 'married' });
+    knownPair.add(key);
+  }
+
   // 3) 톱-다운 배치
   const positions = layoutTopDown(peopleById, parentships, couples);
 
