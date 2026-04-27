@@ -487,10 +487,19 @@ function drawParentChildLines(svg, ps, positions) {
   const childTopY = children[0].y;
   const busY = (busTopY + childTopY) / 2;
 
+  // 1) 부모 부부 중심에서 busY까지 수직 드롭
   svg.appendChild(el('line', { x1: busX, y1: busTopY, x2: busX, y2: busY, stroke: '#333', 'stroke-width': 1.5 }));
-  const minCx = Math.min(...children.map(c => c.x + NODE_W / 2));
-  const maxCx = Math.max(...children.map(c => c.x + NODE_W / 2));
-  svg.appendChild(el('line', { x1: minCx, y1: busY, x2: maxCx, y2: busY, stroke: '#333', 'stroke-width': 1.5 }));
+
+  // 2) 자녀 가로 bus — busX(부모 중심)도 반드시 포함하여 수직 드롭과 자녀들을 잇도록 확장.
+  //    자녀가 1명이고 부모 중심과 X가 다르면, bus가 0길이가 되어 라인이 끊겨 보이는 버그를 방지.
+  const childCxList = children.map(c => c.x + NODE_W / 2);
+  const minCx = Math.min(...childCxList, busX);
+  const maxCx = Math.max(...childCxList, busX);
+  if (maxCx > minCx) {
+    svg.appendChild(el('line', { x1: minCx, y1: busY, x2: maxCx, y2: busY, stroke: '#333', 'stroke-width': 1.5 }));
+  }
+
+  // 3) bus에서 각 자녀 위로 수직 드롭
   for (const c of children) {
     const cx = c.x + NODE_W / 2;
     svg.appendChild(el('line', { x1: cx, y1: busY, x2: cx, y2: c.y, stroke: '#333', 'stroke-width': 1.5 }));
