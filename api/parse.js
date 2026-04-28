@@ -261,15 +261,34 @@ function inferMissingRelationships(data) {
     { match: (n) => /조카/.test(n), target: 'nibling' },
   ];
 
-  for (const p of data.people) {
-    if (p.id === client.id || p.id === spouseId) continue;
-    if (inParentship(p.id)) continue;
+  // 고정점 반복: 한 패스에서 부모가 생성되어야 같은 패스 후반에 형제·조부모를 연결할 수 있음.
+  // 변화가 없을 때까지 반복.
+  let changed = true;
+  let iter = 0;
+  while (changed && iter < 8) {
+    iter++;
+    changed = false;
+    for (const p of data.people) {
+      if (p.id === client.id || p.id === spouseId) continue;
+      if (inParentship(p.id)) continue;
 
-    const name = p.name || '';
-    const rule = RULES.find(r => r.match(name));
-    if (!rule) continue;
+      const name = p.name || '';
+      const rule = RULES.find(r => r.match(name));
+      if (!rule) continue;
 
-    switch (rule.target) {
+      const before = data.parentships.length + data.parentships.reduce((acc, ps) =>
+        acc + ps.parents.length + ps.children.length, 0);
+
+      applyRule(p, rule.target);
+
+      const after = data.parentships.length + data.parentships.reduce((acc, ps) =>
+        acc + ps.parents.length + ps.children.length, 0);
+      if (after !== before) changed = true;
+    }
+  }
+
+  function applyRule(p, target) {
+    switch (target) {
       case 'client_parent': {
         const ps = ensureClientParentship();
         if (!ps.parents.includes(p.id)) ps.parents.push(p.id);
