@@ -57,6 +57,19 @@ const SYSTEM_PROMPT = `당신은 한국 사회복지 실천현장의 사정(asse
 - ★ 중요: 같은 자녀의 부모 쌍은 인터뷰에 "결혼"이라는 단어가 없어도 반드시 marriages 배열에
   married 상태로 추가하세요 (예: "외조부는 일찍 작고, 외조모는 78세"라면 외조부+외조모를
   married로 표기). 이 결혼 관계가 빠지면 가계도 결혼선이 그려지지 않습니다.
+- ★★ 가장 중요: 인터뷰에 등장한 모든 가족 구성원은 반드시 parentships로 가족 트리에 연결하세요.
+  외톨이 인물(parentships에 등장하지 않는 사람)이 있으면 가계도가 깨집니다.
+  한국어 호칭 → parentship 매핑 예시:
+  · "본인의 어머니/아버지" → parentships: [{parents:["father","mother"], children:["self"]}]
+  · "시어머니/시아버지" (배우자의 부모) → parentships: [{parents:["father_in_law","mother_in_law"], children:["husband"]}]
+  · "장인/장모" (배우자의 부모) → 위와 동일 (배우자 ID로 children)
+  · "친조부/친조모" → 본인 아버지의 부모 → parentships: [{parents:["pgf","pgm"], children:["father"]}]
+  · "외조부/외조모" → 본인 어머니의 부모 → parentships: [{parents:["mgf","mgm"], children:["mother"]}]
+  · "형/누나/언니/오빠/동생" → 본인과 같은 부모를 공유 → 본인의 parentship에 children으로 추가
+  · "처남/처제/시동생/시누이" → 배우자의 부모를 공유
+  · "아들/딸/큰아이/작은아이/자녀" → parentships: [{parents:["self","spouse"], children:[...]}]
+  · "조카" → 본인의 형제자매와 그 배우자의 자녀 → 그 형제 부부의 parentship에 children
+  외국 출신 가족(예: "베트남 어머니")도 동일하게 parentship으로 연결하세요.
 - 누락은 가능한 한 풍부하게 포함: 표준 카테고리(직업/교육/종교/의료/이웃/친구/여가/학습) 중 인터뷰에 등장하지
   않은 카테고리, 인구학 정보 미상(나이/성별/생존), 가족 구성원의 직업·건강 정보 미상 등.`;
 
@@ -166,7 +179,175 @@ function validateAndNormalize(obj) {
     out.client_id = c.id;
     c.is_client = true;
   }
+
+  // 한국어 호칭 기반 결정론적 parentship 추론 (LLM 누락 보정)
+  inferMissingRelationships(out);
+
   return out;
+}
+
+// LLM이 인물은 추출했지만 parentships로 가족 트리에 연결하지 않은 경우,
+// 이름의 한국어 호칭(어머니/아버지/시어머니/남동생 등)으로 관계를 자동 추론.
+function inferMissingRelationships(data) {
+  const peopleById = new Map(data.people.map(p => [p.id, p]));
+  const client = peopleById.get(data.client_id);
+  if (!client) return;
+
+  // 클라이언트 배우자 찾기
+  const clientMarriage = data.marriages.find(m => m.a === client.id || m.b === client.id);
+  const spouseId = clientMarriage ? (clientMarriage.a === client.id ? clientMarriage.b : clientMarriage.a) : null;
+
+  // 이미 어떤 parentship에 등장하는 사람 식별
+  const inParentship = (id) => data.parentships.some(ps =>
+    ps.parents.includes(id) || ps.children.includes(id));
+
+  // 클라이언트 부모 parentship 가져오기/생성
+  const ensureClientParentship = () => {
+    let ps = data.parentships.find(p => p.children.includes(client.id));
+    if (!ps) {
+      ps = { parents: [], children: [client.id] };
+      data.parentships.push(ps);
+    }
+    return ps;
+  };
+  // 배우자 부모 parentship 가져오기/생성
+  const ensureSpouseParentship = () => {
+    if (!spouseId) return null;
+    let ps = data.parentships.find(p => p.children.includes(spouseId));
+    if (!ps) {
+      ps = { parents: [], children: [spouseId] };
+      data.parentships.push(ps);
+    }
+    return ps;
+  };
+
+  // 클라이언트 부모 ID(아버지/어머니) 식별 — 조부모 추가 시 필요
+  const getClientFather = () => {
+    const ps = data.parentships.find(p => p.children.includes(client.id));
+    if (!ps) return null;
+    return ps.parents.find(pid => peopleById.get(pid)?.sex === 'M') || null;
+  };
+  const getClientMother = () => {
+    const ps = data.parentships.find(p => p.children.includes(client.id));
+    if (!ps) return null;
+    return ps.parents.find(pid => peopleById.get(pid)?.sex === 'F') || null;
+  };
+
+  // 호칭 → 추론 규칙
+  const RULES = [
+    // 시어머니/시아버지 (배우자의 부모) — 시 prefix 우선 매칭
+    { match: (n) => /시어머니|시모|장모/.test(n), target: 'spouse_parent' },
+    { match: (n) => /시아버지|시부|장인/.test(n), target: 'spouse_parent' },
+    { match: (n) => /시동생|시누이|시형|시누|처남|처제|처형|처남댁|올케/.test(n), target: 'spouse_sibling' },
+
+    // 친조부모 (아버지의 부모)
+    { match: (n) => /친조부|친조모|할아버지|할머니/.test(n) && !/외/.test(n), target: 'paternal_grandparent' },
+    // 외조부모 (어머니의 부모)
+    { match: (n) => /외조부|외조모|외할아버지|외할머니/.test(n), target: 'maternal_grandparent' },
+
+    // 본인의 부모 (시/외/장 단어 없을 때)
+    { match: (n) => /어머니|엄마|모친/.test(n) && !/시|장|외|친조/.test(n), target: 'client_parent' },
+    { match: (n) => /아버지|아빠|부친/.test(n) && !/시|장|외|친조/.test(n), target: 'client_parent' },
+
+    // 본인의 형제자매
+    { match: (n) => /^(형|오빠|언니|누나|남동생|여동생|동생|쌍둥이)$|본인.{0,3}(형|오빠|언니|누나|동생)/.test(n) && !/시|처|조카/.test(n),
+      target: 'client_sibling' },
+
+    // 본인의 자녀
+    { match: (n) => /(아들|딸|자녀|큰아이|작은아이|첫째|둘째|셋째|장남|장녀|차남|차녀|막내)/.test(n) && !/시|조카/.test(n),
+      target: 'client_child' },
+
+    // 조카 (본인 형제의 자녀)
+    { match: (n) => /조카/.test(n), target: 'nibling' },
+  ];
+
+  for (const p of data.people) {
+    if (p.id === client.id || p.id === spouseId) continue;
+    if (inParentship(p.id)) continue;
+
+    const name = p.name || '';
+    const rule = RULES.find(r => r.match(name));
+    if (!rule) continue;
+
+    switch (rule.target) {
+      case 'client_parent': {
+        const ps = ensureClientParentship();
+        if (!ps.parents.includes(p.id)) ps.parents.push(p.id);
+        break;
+      }
+      case 'spouse_parent': {
+        const ps = ensureSpouseParentship();
+        if (ps && !ps.parents.includes(p.id)) ps.parents.push(p.id);
+        break;
+      }
+      case 'paternal_grandparent': {
+        const father = getClientFather();
+        if (!father) break;
+        let ps = data.parentships.find(p => p.children.includes(father));
+        if (!ps) {
+          ps = { parents: [], children: [father] };
+          data.parentships.push(ps);
+        }
+        if (!ps.parents.includes(p.id)) ps.parents.push(p.id);
+        break;
+      }
+      case 'maternal_grandparent': {
+        const mother = getClientMother();
+        if (!mother) break;
+        let ps = data.parentships.find(p => p.children.includes(mother));
+        if (!ps) {
+          ps = { parents: [], children: [mother] };
+          data.parentships.push(ps);
+        }
+        if (!ps.parents.includes(p.id)) ps.parents.push(p.id);
+        break;
+      }
+      case 'client_sibling': {
+        const ps = data.parentships.find(p => p.children.includes(client.id));
+        if (!ps) break;
+        if (!ps.children.includes(p.id)) ps.children.push(p.id);
+        break;
+      }
+      case 'spouse_sibling': {
+        if (!spouseId) break;
+        const ps = data.parentships.find(p => p.children.includes(spouseId));
+        if (!ps) break;
+        if (!ps.children.includes(p.id)) ps.children.push(p.id);
+        break;
+      }
+      case 'client_child': {
+        // 본인+배우자가 부모인 parentship 찾기/생성
+        let ps = data.parentships.find(p => p.parents.includes(client.id) &&
+          (spouseId ? p.parents.includes(spouseId) : true));
+        if (!ps) {
+          ps = { parents: spouseId ? [client.id, spouseId] : [client.id], children: [] };
+          data.parentships.push(ps);
+        }
+        if (!ps.children.includes(p.id)) ps.children.push(p.id);
+        break;
+      }
+      case 'nibling': {
+        // 본인 형제 + 그 배우자의 자녀 — 적절한 형제를 찾기 어려우면 스킵
+        const siblingPs = data.parentships.find(p => p.children.includes(client.id));
+        if (!siblingPs) break;
+        const siblingIds = siblingPs.children.filter(id => id !== client.id);
+        if (siblingIds.length === 0) break;
+        // 첫 번째 형제 + (그 형제의 배우자)의 parentship에 자녀로 추가
+        const siblingId = siblingIds[0];
+        const siblingMarriage = data.marriages.find(m => m.a === siblingId || m.b === siblingId);
+        const siblingSpouse = siblingMarriage
+          ? (siblingMarriage.a === siblingId ? siblingMarriage.b : siblingMarriage.a) : null;
+        let ps = data.parentships.find(p => p.parents.includes(siblingId) &&
+          (siblingSpouse ? p.parents.includes(siblingSpouse) : true));
+        if (!ps) {
+          ps = { parents: siblingSpouse ? [siblingId, siblingSpouse] : [siblingId], children: [] };
+          data.parentships.push(ps);
+        }
+        if (!ps.children.includes(p.id)) ps.children.push(p.id);
+        break;
+      }
+    }
+  }
 }
 
 function normalizePerson(p) {

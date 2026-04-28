@@ -36,10 +36,17 @@ export function renderEcomap(svg, data) {
     fill: '#FAFAFA', stroke: '#888', 'stroke-width': 2, 'stroke-dasharray': '6 5',
   }));
 
-  // 2) 가구원 배치 (중앙 원 안에 가로 배열)
+  // 2) 가구원 배치 (중앙 원 안에 미니 가계도 — 부부 관계 + 부모-자녀 라인 포함)
   const householdPeople = (data.household || []).map(id =>
     (data.people || []).find(p => p.id === id)).filter(Boolean);
-  const hhPositions = layoutHousehold(householdPeople, cx, cy);
+  const marriages = data.marriages || [];
+  const parentships = data.parentships || [];
+  const hhPositions = layoutHousehold(householdPeople, cx, cy, marriages, parentships);
+
+  // 2-a) 가구원 간 결혼선 + 부모-자녀선 먼저 그리기 (노드 아래 깔리도록)
+  drawHouseholdFamilyLines(svg, hhPositions, marriages, parentships);
+
+  // 2-b) 가구원 노드
   for (const { person, x, y } of hhPositions) {
     drawHouseholdPerson(svg, person, x, y, person.id === data.client_id);
   }
@@ -85,17 +92,142 @@ function defineMarkers(svg) {
   svg.appendChild(defs);
 }
 
-// ─── 가구원 레이아웃 ────────────────────────────────────────────────
-function layoutHousehold(people, cx, cy) {
+// ─── 가구원 레이아웃 — 부모/자녀 2단 배치(가능 시) ────────────────────
+// 가구 안에서 parentships로 부모-자녀가 있으면 부모는 윗줄, 자녀는 아랫줄.
+// 부부는 인접하게 배치하여 결혼선이 짧게 그려짐.
+function layoutHousehold(people, cx, cy, marriages, parentships) {
   if (people.length === 0) return [];
-  const spacing = 16;
-  const total = people.length * HOUSEHOLD_NODE + (people.length - 1) * spacing;
+  const spacing = 14;
+  const householdSet = new Set(people.map(p => p.id));
+
+  // 가구 내부에서 자녀로 등장하는 사람 식별
+  const childrenIds = new Set();
+  for (const ps of parentships) {
+    const hasParentInHH = (ps.parents || []).some(id => householdSet.has(id));
+    if (!hasParentInHH) continue;
+    for (const cid of (ps.children || [])) {
+      if (householdSet.has(cid)) childrenIds.add(cid);
+    }
+  }
+
+  // 부모행과 자녀행 분리
+  const parentRow = people.filter(p => !childrenIds.has(p.id));
+  const childRow = people.filter(p => childrenIds.has(p.id));
+
+  // 부모 정렬: 부부면 인접(M 좌, F 우)
+  const parentRowSorted = sortCoupleAdjacent(parentRow, marriages);
+  // 자녀 정렬: 나이 desc(손위 좌측)
+  const childRowSorted = childRow.slice().sort((a, b) => (b.age || 0) - (a.age || 0));
+
+  const positions = [];
+  if (childRowSorted.length === 0) {
+    // 단일 세대 가구
+    layRow(parentRowSorted, cx, cy, spacing).forEach(p => positions.push(p));
+  } else {
+    // 2단 가구 (부모 위, 자녀 아래)
+    const offset = HOUSEHOLD_NODE / 2 + 18;
+    layRow(parentRowSorted, cx, cy - offset, spacing).forEach(p => positions.push(p));
+    layRow(childRowSorted, cx, cy + offset, spacing).forEach(p => positions.push(p));
+  }
+  return positions;
+}
+
+function layRow(rowPeople, cx, y, spacing) {
+  if (rowPeople.length === 0) return [];
+  const total = rowPeople.length * HOUSEHOLD_NODE + (rowPeople.length - 1) * spacing;
   let x = cx - total / 2;
-  return people.map(p => {
-    const out = { person: p, x: x + HOUSEHOLD_NODE / 2, y: cy };
+  return rowPeople.map(p => {
+    const out = { person: p, x: x + HOUSEHOLD_NODE / 2, y };
     x += HOUSEHOLD_NODE + spacing;
     return out;
   });
+}
+
+function sortCoupleAdjacent(rowPeople, marriages) {
+  const idSet = new Set(rowPeople.map(p => p.id));
+  const used = new Set();
+  const ordered = [];
+  for (const p of rowPeople) {
+    if (used.has(p.id)) continue;
+    const m = marriages.find(mm => (mm.a === p.id || mm.b === p.id) &&
+      idSet.has(mm.a === p.id ? mm.b : mm.a));
+    if (m) {
+      const spouseId = m.a === p.id ? m.b : m.a;
+      const spouse = rowPeople.find(q => q.id === spouseId);
+      const left = p.sex === 'M' ? p : (spouse.sex === 'M' ? spouse : p);
+      const right = left === p ? spouse : p;
+      ordered.push(left, right);
+      used.add(p.id); used.add(spouseId);
+    } else {
+      ordered.push(p);
+      used.add(p.id);
+    }
+  }
+  return ordered;
+}
+
+// ─── 가구원 간 가계 라인 (결혼선 + 부모-자녀선) ──────────────────────
+function drawHouseholdFamilyLines(svg, positions, marriages, parentships) {
+  const posMap = new Map(positions.map(p => [p.person.id, p]));
+
+  // 1) 결혼선 (같은 행에 있는 부부)
+  for (const m of marriages) {
+    const A = posMap.get(m.a);
+    const B = posMap.get(m.b);
+    if (!A || !B) continue;
+    if (Math.abs(A.y - B.y) > 2) continue; // 다른 행이면 결혼선 그리지 않음
+    const half = HOUSEHOLD_NODE / 2;
+    const y = A.y;
+    const x1 = Math.min(A.x, B.x) + half - 2; // 노드 안쪽 살짝
+    const x2 = Math.max(A.x, B.x) - half + 2;
+    if (x2 <= x1) continue;
+    const isCohabit = m.status === 'cohabit' || m.status === 'partner';
+    const isDivorced = m.status === 'divorced';
+    svg.appendChild(el('line', {
+      x1, y1: y, x2, y2: y, stroke: '#333', 'stroke-width': 2,
+      'stroke-linecap': 'round',
+      ...(isCohabit && { 'stroke-dasharray': '5 3' }),
+    }));
+    if (isDivorced) {
+      const mx = (x1 + x2) / 2;
+      svg.appendChild(el('line', { x1: mx - 5, y1: y - 6, x2: mx, y2: y + 6, stroke: '#c00', 'stroke-width': 2 }));
+      svg.appendChild(el('line', { x1: mx + 1, y1: y - 6, x2: mx + 6, y2: y + 6, stroke: '#c00', 'stroke-width': 2 }));
+    }
+  }
+
+  // 2) 부모-자녀선 (가구 내부에서 부모 모두 + 자녀 모두 있는 parentship에 한함)
+  for (const ps of parentships) {
+    const parentPos = (ps.parents || []).map(id => posMap.get(id)).filter(Boolean);
+    const childPos = (ps.children || []).map(id => posMap.get(id)).filter(Boolean);
+    if (parentPos.length === 0 || childPos.length === 0) continue;
+    if (parentPos[0].y >= childPos[0].y) continue; // 부모가 자녀 위에 있을 때만
+
+    // 부모 중심 X
+    let busX;
+    if (parentPos.length === 2) {
+      busX = (parentPos[0].x + parentPos[1].x) / 2;
+    } else {
+      busX = parentPos[0].x;
+    }
+    const busTopY = parentPos[0].y + HOUSEHOLD_NODE / 2 - 2;
+    const childTopY = childPos[0].y - HOUSEHOLD_NODE / 2 + 2;
+    const busY = (busTopY + childTopY) / 2;
+
+    // 부모 → bus 수직선
+    svg.appendChild(el('line', { x1: busX, y1: busTopY, x2: busX, y2: busY, stroke: '#555', 'stroke-width': 1.4 }));
+
+    // 자녀 가로 bus (busX 포함)
+    const childCxs = childPos.map(c => c.x);
+    const minCx = Math.min(...childCxs, busX);
+    const maxCx = Math.max(...childCxs, busX);
+    if (maxCx > minCx) {
+      svg.appendChild(el('line', { x1: minCx, y1: busY, x2: maxCx, y2: busY, stroke: '#555', 'stroke-width': 1.4 }));
+    }
+    // bus → 각 자녀 수직선
+    for (const c of childPos) {
+      svg.appendChild(el('line', { x1: c.x, y1: busY, x2: c.x, y2: c.y - HOUSEHOLD_NODE / 2 + 2, stroke: '#555', 'stroke-width': 1.4 }));
+    }
+  }
 }
 
 function drawHouseholdPerson(svg, p, cx, cy, isClient) {
